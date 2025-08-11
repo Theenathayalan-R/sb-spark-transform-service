@@ -1,0 +1,2 @@
+[console_scripts]
+transform-service = transform_service.cli:main

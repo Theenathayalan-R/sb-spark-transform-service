@@ -1,0 +1,21 @@
+# Example pipeline configuration
+sql_base_path: "examples/sql"
+transformations:
+  - name: load_customers
+    sql_file: 01_load_customers.sql
+    depends_on: []
+  - name: load_orders
+    sql_file: 02_load_orders.sql
+    depends_on: []
+    parallel_group: initial
+  - name: join_customers_orders
+    sql_file: 03_join_customers_orders.sql
+    depends_on: [load_customers, load_orders]
+    cache: true
+
+final_outputs:
+  join_customers_orders:
+    table: analytics.example_join
+    mode: overwrite
+
+max_parallel_workers: 2

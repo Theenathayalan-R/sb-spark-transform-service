@@ -1,0 +1,19 @@
+# Example connection configuration (environment variables are supported)
+starburst:
+  host: localhost
+  port: 8080
+  catalog: memory
+  schema: default
+  user: ${STARBURST_USER}
+  password: ${STARBURST_PASSWORD}
+
+spark:
+  app_name: "TransformService Examples"
+  # Optionally point to a local JDBC jar; if omitted, pass via TRINO_JDBC_JAR env var
+  # jdbc_jar_path: "/path/to/trino-jdbc-xxx.jar"
+  iceberg: false
+  configs:
+    spark.sql.shuffle.partitions: "4"
+
+job_tracking:
+  enabled: false

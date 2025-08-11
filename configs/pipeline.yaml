@@ -1,0 +1,72 @@
+# Pipeline-only configuration (no credentials here)
+sql_base_path: "sql"
+max_parallel_workers: 4
+
+# Performance monitoring settings
+performance_monitoring:
+  enabled: true
+  log_step_metrics: true
+  log_pipeline_summary: true
+
+transformations:
+  - name: "load_customers"
+    sql_file: "01_load_customers.sql"
+    depends_on: []
+    output_table: "temp_customers"
+    cache: true
+    smart_cache: true
+    cache_threshold_mb: 500
+  - name: "load_orders"
+    sql_file: "02_load_orders.sql"
+    depends_on: []
+    output_table: "temp_orders"
+    cache: true
+    smart_cache: true
+    cache_threshold_mb: 1000
+  - name: "load_products"
+    sql_file: "03_load_products.sql"
+    depends_on: []
+    parallel_group: "data_loading"
+    output_table: "temp_products"
+    cache: true
+    smart_cache: true
+    cache_threshold_mb: 200
+  - name: "clean_customers"
+    sql_file: "04_clean_customers.sql"
+    depends_on: ["load_customers"]
+    output_table: "clean_customers"
+    smart_cache: true
+  - name: "clean_orders"
+    sql_file: "05_clean_orders.sql"
+    depends_on: ["load_orders", "load_products"]
+    parallel_group: "data_cleaning"
+    output_table: "clean_orders"
+    smart_cache: true
+  - name: "customer_metrics"
+    sql_file: "06_customer_metrics.sql"
+    depends_on: ["clean_customers", "clean_orders"]
+    parallel_group: "metrics_calculation"
+    output_table: "customer_metrics"
+    smart_cache: true
+  - name: "product_metrics"
+    sql_file: "07_product_metrics.sql"
+    depends_on: ["clean_orders", "load_products"]
+    parallel_group: "metrics_calculation"
+    output_table: "product_metrics"
+    smart_cache: true
+  - name: "final_report"
+    sql_file: "08_final_report.sql"
+    depends_on: ["customer_metrics", "product_metrics"]
+    output_table: "final_business_report"
+    smart_cache: false  # Final report typically doesn't need caching
+
+final_outputs:
+  customer_metrics:
+    table: "analytics.customer_summary"
+    mode: "overwrite"
+  product_metrics:
+    table: "analytics.product_performance"
+    mode: "overwrite"
+  final_report:
+    table: "reports.business_dashboard"
+    mode: "overwrite"
