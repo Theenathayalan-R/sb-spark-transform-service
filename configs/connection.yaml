@@ -1,12 +1,14 @@
 # Connection-only configuration
 starburst:
   host: "your-starburst-host.com"
-  port: 443
+  port: 8980
   catalog: "your_catalog"
   schema: "your_schema"
   user: "${STARBURST_USER}"
   password: "${STARBURST_PASSWORD}"
   ssl: true
+  scheme: https
+  verify: "/var/development.pem"
   application_name: "transformation_pipeline"
   fetchsize: 50000  # Increased for better throughput
   batchsize: 50000  # Increased for better throughput

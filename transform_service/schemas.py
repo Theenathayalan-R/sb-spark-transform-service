@@ -28,7 +28,21 @@ class StarburstConfig(BaseModel):
     batchsize: int = 10000
     application_name: Optional[str] = None
     ssl: bool = True
+    # Optional: explicitly declare HTTP scheme; https implies SSL=true, http implies SSL=false
+    scheme: Optional[str] = None
+    # Optional: verification setting
+    # - boolean false disables verification (maps to SSLVerification=NONE)
+    # - string FULL|CA|NONE selects verification mode
+    # - string 'system' uses system trust store
+    # - path to a CA bundle (.pem/.crt etc.) or Java truststore (.jks/.p12)
+    verify: Optional[Any] = None
     use_temp_views: bool = False
+    # --- Automatic type harmonization (optional) ---
+    auto_cast_types: bool = False
+    type_inference_sample_rows: int = 1000
+    type_inference_threshold: float = 0.9
+    # Session time zone to use when normalizing timestamps
+    session_time_zone: str = "UTC"
 
 
 class JobTrackingConfig(BaseModel):
