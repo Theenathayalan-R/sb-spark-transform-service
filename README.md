@@ -62,6 +62,25 @@ starburst:
   retry_backoff_seconds: 1.0
   # Optional: let steps register temp views for placeholders
   use_temp_views: false
+  # Optional: automatic type harmonization (off by default)
+  auto_cast_types: true               # master switch for any harmonization
+  auto_cast_broad_types: true         # enable broader string->typed casts
+  type_inference_sample_rows: 2000    # sample size for inference
+  type_inference_threshold: 0.9       # min fraction of matching values
+  session_time_zone: "UTC"            # used when normalizing timestamps
+  normalize_timestamp_to_utc: false   # normalize to UTC when true
+  null_sentinels: ["", "null", "NaN", "N/A"]
+  boolean_true_values: ["true", "1", "y", "yes", "t"]
+  boolean_false_values: ["false", "0", "n", "no", "f"]
+  date_inference_formats: ["yyyy-MM-dd", "MM/dd/yyyy", "dd/MM/yyyy", "yyyyMMdd"]
+  timestamp_inference_formats: [
+    "yyyy-MM-dd HH:mm:ss.SSS",
+    "yyyy-MM-dd HH:mm:ss",
+    "yyyy-MM-dd'T'HH:mm:ss.SSS",
+    "yyyy-MM-dd'T'HH:mm:ss"
+  ]
+  decimal_max_scale: 6
+  decimal_fallback_to_double: true
 
 spark:
   app_name: "TransformService"
@@ -188,6 +207,16 @@ Command-line options:
 - `--restart` Restart from the last successful step if your tracker persists status
 - `--job-id` Provide a job identifier injected into all logs
 - `--log-level` CRITICAL|ERROR|WARNING|INFO|DEBUG (default INFO)
+
+## Automatic Type Harmonization (optional)
+When enabled under the `starburst` section:
+- `auto_cast_types`: master switch for all harmonization
+- `auto_cast_broad_types`: additionally casts common string representations to typed columns
+- Supported inferences: boolean, integer (bigint), float/decimal, date, timestamp, and timestamp-with-timezone
+- Controls: `type_inference_sample_rows`, `type_inference_threshold`, `null_sentinels`, boolean value lists, date/timestamp format hints, `decimal_max_scale`, `decimal_fallback_to_double`
+- Timestamp normalization: `normalize_timestamp_to_utc` with `session_time_zone`
+
+Defaults are safe (off). The pipeline never fails due to harmonization; errors are swallowed and original types are preserved.
 
 ## Performance and Caching
 - Step-level metrics captured: execution time, row count, partition count, memory usage, Spark job stats.

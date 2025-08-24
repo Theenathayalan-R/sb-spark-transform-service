@@ -163,6 +163,25 @@ class StarburstConnector:
             "normalize_to_utc": bool(self.config.get("normalize_timestamp_to_utc", False)),
             # Session tz used when normalizing timestamps to UTC
             "session_tz": str(self.config.get("session_time_zone", "UTC")),
+            # Broader conversions toggles and hints
+            "broad_enabled": bool(self.config.get("auto_cast_broad_types", False)),
+            "null_sentinels": [str(x).lower() for x in self.config.get("null_sentinels", ["", "null", "NULL", "NaN", "N/A"])],
+            "bool_true": [str(x).lower() for x in self.config.get("boolean_true_values", ["true", "1", "y", "yes", "t"])],
+            "bool_false": [str(x).lower() for x in self.config.get("boolean_false_values", ["false", "0", "n", "no", "f"])],
+            "date_formats": list(self.config.get("date_inference_formats", [
+                "yyyy-MM-dd",
+                "MM/dd/yyyy",
+                "dd/MM/yyyy",
+                "yyyyMMdd",
+            ])),
+            "ts_formats": list(self.config.get("timestamp_inference_formats", [
+                "yyyy-MM-dd HH:mm:ss.SSS",
+                "yyyy-MM-dd HH:mm:ss",
+                "yyyy-MM-dd'T'HH:mm:ss.SSS",
+                "yyyy-MM-dd'T'HH:mm:ss",
+            ])),
+            "decimal_max_scale": int(self.config.get("decimal_max_scale", 6)),
+            "decimal_fallback_to_double": bool(self.config.get("decimal_fallback_to_double", True)),
         }
 
     def _infer_timestamp_string_columns(self, df: Any, sample_rows: int, threshold: float) -> Dict[str, str]:
@@ -225,14 +244,170 @@ class StarburstConnector:
                 cast_map[c] = best_pattern
         return cast_map
 
+    def _infer_broad_string_columns(self, df: Any, settings: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        """Infer broader conversions for string columns: boolean, integer, float/decimal, date, timestamp.
+        Returns a map: column -> { kind: one of [bool,int,float,date,timestamp], fmt?: str, scale?: int }
+        """
+        try:
+            from pyspark.sql import functions as F, types as T  # type: ignore
+        except Exception:
+            return {}
+
+        if not settings.get("broad_enabled"):
+            return {}
+
+        sample_rows = int(settings.get("sample_rows", 1000))
+        threshold = float(settings.get("threshold", 0.9))
+        sentinels = set([s.lower() for s in settings.get("null_sentinels", [])])
+        true_vals = set([s.lower() for s in settings.get("bool_true", [])])
+        false_vals = set([s.lower() for s in settings.get("bool_false", [])])
+        date_formats = list(settings.get("date_formats", []))
+        ts_formats = list(settings.get("ts_formats", []))
+
+        sdf = df.limit(int(sample_rows)) if sample_rows and sample_rows > 0 else df
+        result: Dict[str, Dict[str, Any]] = {}
+
+        for field in df.schema.fields:
+            try:
+                if not isinstance(field.dataType, T.StringType):
+                    continue
+            except Exception:
+                continue
+            c = field.name
+            lc = F.lower(F.trim(F.col(c)))
+            # Cleaned column treating sentinel values as null
+            c_clean = F.when(lc.isin(list(sentinels)), F.lit(None)).otherwise(F.col(c))
+
+            # Total non-null after cleaning
+            try:
+                total_non_null = (
+                    sdf.select(c_clean.alias("v")).agg((F.sum(F.when(F.col("v").isNotNull(), F.lit(1)).otherwise(F.lit(0)))).alias("total")).collect()[0]["total"]
+                )
+            except Exception:
+                continue
+            if not total_non_null:
+                continue
+
+            best_kind = None
+            best_score = -1.0
+            best_extra: Dict[str, Any] = {}
+
+            # Boolean
+            try:
+                bool_match = (
+                    sdf.select(lc.alias("v"))
+                    .agg((F.sum(F.when(F.col("v").isin(list(true_vals | false_vals)), F.lit(1)).otherwise(F.lit(0)))).alias("cnt"))
+                    .collect()[0]["cnt"]
+                )
+                score = (bool_match or 0) / float(total_non_null)
+                if score >= threshold and score > best_score:
+                    best_kind = "bool"
+                    best_score = score
+                    best_extra = {}
+            except Exception:
+                pass
+
+            # Integer (bigint)
+            try:
+                # regex for integer
+                int_match = (
+                    sdf.select(lc.alias("v"))
+                    .agg((F.sum(F.when(F.col("v").rlike(r"^[+-]?\d+$"), F.lit(1)).otherwise(F.lit(0)))).alias("cnt"))
+                    .collect()[0]["cnt"]
+                )
+                score = (int_match or 0) / float(total_non_null)
+                if score >= threshold and score > best_score:
+                    best_kind = "int"
+                    best_score = score
+                    best_extra = {}
+            except Exception:
+                pass
+
+            # Float/Decimal
+            try:
+                float_match = (
+                    sdf.select(lc.alias("v"))
+                    .agg((F.sum(F.when(F.col("v").rlike(r"^[+-]?(?:\d+\.\d*|\d*\.\d+|\d+)(?:[eE][+-]?\d+)?$"), F.lit(1)).otherwise(F.lit(0)))).alias("cnt"))
+                    .collect()[0]["cnt"]
+                )
+                score = (float_match or 0) / float(total_non_null)
+                if score >= threshold and score > best_score:
+                    best_kind = "float"
+                    best_score = score
+                    # Estimate scale up to max
+                    scale = 0
+                    try:
+                        # get max of decimals after dot in sample
+                        dec_cnt = (
+                            sdf.select(lc.alias("v"))
+                            .select(F.regexp_extract(F.col("v"), r"^[+-]?(?:\d*\.(\d+))", 1).alias("d"))
+                            .agg(F.max(F.length(F.col("d"))).alias("mx"))
+                            .collect()[0]["mx"]
+                        )
+                        if dec_cnt is not None:
+                            scale = int(dec_cnt)
+                    except Exception:
+                        scale = 0
+                    best_extra = {"scale": min(int(settings.get("decimal_max_scale", 6)), int(scale or 0))}
+            except Exception:
+                pass
+
+            # Date
+            try:
+                best_date_cnt = -1
+                best_date_fmt = None
+                for fmt in date_formats:
+                    cnt = (
+                        sdf.select(F.to_date(c_clean, fmt).alias("d"))
+                        .agg((F.sum(F.when(F.col("d").isNotNull(), F.lit(1)).otherwise(F.lit(0)))).alias("cnt"))
+                        .collect()[0]["cnt"]
+                    )
+                    if cnt is not None and cnt > best_date_cnt:
+                        best_date_cnt = int(cnt)
+                        best_date_fmt = fmt
+                score = (best_date_cnt or 0) / float(total_non_null)
+                if best_date_fmt and score >= threshold and score > best_score:
+                    best_kind = "date"
+                    best_score = score
+                    best_extra = {"fmt": best_date_fmt}
+            except Exception:
+                pass
+
+            # Timestamp (no timezone)
+            try:
+                best_ts_cnt = -1
+                best_ts_fmt = None
+                for fmt in ts_formats:
+                    cnt = (
+                        sdf.select(F.to_timestamp(c_clean, fmt).alias("t"))
+                        .agg((F.sum(F.when(F.col("t").isNotNull(), F.lit(1)).otherwise(F.lit(0)))).alias("cnt"))
+                        .collect()[0]["cnt"]
+                    )
+                    if cnt is not None and cnt > best_ts_cnt:
+                        best_ts_cnt = int(cnt)
+                        best_ts_fmt = fmt
+                score = (best_ts_cnt or 0) / float(total_non_null)
+                if best_ts_fmt and score >= threshold and score > best_score:
+                    best_kind = "timestamp"
+                    best_score = score
+                    best_extra = {"fmt": best_ts_fmt}
+            except Exception:
+                pass
+
+            if best_kind:
+                result[c] = {"kind": best_kind, **best_extra}
+
+        return result
+
     def _harmonize_types(self, df: Any) -> Any:
         """Apply general, column-agnostic casts:
         - Strings that look like TIMESTAMP WITH TIME ZONE -> cast to naive TimestampType
           (optionally normalize to UTC when enabled)
+        - Optional broad casting of strings to booleans, integers, floats/decimals, date, timestamp
         - Leave other types as-is (varchar/char already come as StringType)
         """
         try:
-            from pyspark.sql import functions as F  # type: ignore
+            from pyspark.sql import functions as F, types as T  # type: ignore
         except Exception:
             return df
 
@@ -240,20 +415,57 @@ class StarburstConnector:
         if not settings["enabled"]:
             return df
 
-        # Detect which string columns should be treated as timestamps
-        cast_map = self._infer_timestamp_string_columns(
+        # Detect which string columns should be treated as timestamps with timezone
+        tz_cast_map = self._infer_timestamp_string_columns(
             df, settings["sample_rows"], settings["threshold"]
         )
-        if not cast_map:
+        # Detect broader types if enabled
+        broad_cast_map = self._infer_broad_string_columns(df, settings) if settings.get("broad_enabled") else {}
+
+        if not tz_cast_map and not broad_cast_map:
             return df
 
         projected_cols = []
         for c in df.columns:
-            if c in cast_map:
-                ts = F.to_timestamp(F.col(c), cast_map[c])
+            if c in tz_cast_map:
+                ts = F.to_timestamp(F.col(c), tz_cast_map[c])
                 if settings["normalize_to_utc"]:
                     ts = F.to_utc_timestamp(ts, settings["session_tz"])
                 projected_cols.append(ts.alias(c))
+            elif c in broad_cast_map:
+                info = broad_cast_map[c]
+                kind = info.get("kind")
+                if kind == "bool":
+                    lc = F.lower(F.trim(F.col(c)))
+                    true_vals = settings.get("bool_true", [])
+                    false_vals = settings.get("bool_false", [])
+                    casted = F.when(lc.isin(true_vals), F.lit(True))\
+                             .when(lc.isin(false_vals), F.lit(False))\
+                             .otherwise(F.lit(None))
+                    projected_cols.append(casted.cast("boolean").alias(c))
+                elif kind == "int":
+                    projected_cols.append(F.col(c).cast("bigint").alias(c))
+                elif kind == "float":
+                    scale = int(info.get("scale", 0))
+                    if settings.get("decimal_fallback_to_double", True):
+                        projected_cols.append(F.col(c).cast("double").alias(c))
+                    else:
+                        try:
+                            from pyspark.sql.types import DecimalType  # type: ignore
+                            projected_cols.append(F.col(c).cast(DecimalType(38, scale)).alias(c))
+                        except Exception:
+                            projected_cols.append(F.col(c).cast("double").alias(c))
+                elif kind == "date":
+                    fmt = info.get("fmt")
+                    projected_cols.append(F.to_date(F.col(c), fmt).alias(c))
+                elif kind == "timestamp":
+                    fmt = info.get("fmt")
+                    ts = F.to_timestamp(F.col(c), fmt)
+                    if settings["normalize_to_utc"]:
+                        ts = F.to_utc_timestamp(ts, settings["session_tz"])
+                    projected_cols.append(ts.alias(c))
+                else:
+                    projected_cols.append(F.col(c))
             else:
                 projected_cols.append(F.col(c))
         return df.select(*projected_cols)

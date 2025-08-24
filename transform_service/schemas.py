@@ -43,6 +43,43 @@ class StarburstConfig(BaseModel):
     type_inference_threshold: float = 0.9
     # Session time zone to use when normalizing timestamps
     session_time_zone: str = "UTC"
+    # Normalize timestamps to UTC when parsing; kept optional and off by default
+    normalize_timestamp_to_utc: bool = False
+    # Broader conversions (beyond timestamp parsing). When enabled, the connector will
+    # try to coerce common string representations into typed columns (date, boolean,
+    # integer/long, double/decimal) using heuristic sampling with the same threshold.
+    auto_cast_broad_types: bool = False
+    # Treat these string values as nulls during inference/casting (case-insensitive)
+    null_sentinels: List[str] = Field(
+        default_factory=lambda: ["", "null", "NULL", "NaN", "N/A"]
+    )
+    # Boolean parsing configuration (values are compared case-insensitively after trim)
+    boolean_true_values: List[str] = Field(
+        default_factory=lambda: ["true", "1", "y", "yes", "t"]
+    )
+    boolean_false_values: List[str] = Field(
+        default_factory=lambda: ["false", "0", "n", "no", "f"]
+    )
+    # Date and timestamp format hints for inference (Spark SimpleDateFormat patterns)
+    date_inference_formats: List[str] = Field(
+        default_factory=lambda: [
+            "yyyy-MM-dd",
+            "MM/dd/yyyy",
+            "dd/MM/yyyy",
+            "yyyyMMdd",
+        ]
+    )
+    timestamp_inference_formats: List[str] = Field(
+        default_factory=lambda: [
+            "yyyy-MM-dd HH:mm:ss.SSS",
+            "yyyy-MM-dd HH:mm:ss",
+            "yyyy-MM-dd'T'HH:mm:ss.SSS",
+            "yyyy-MM-dd'T'HH:mm:ss",
+        ]
+    )
+    # Decimal casting options
+    decimal_max_scale: int = 6
+    decimal_fallback_to_double: bool = True
 
 
 class JobTrackingConfig(BaseModel):
